@@ -1,4 +1,8 @@
+# ===================================================================
+# handlers.py  (обновлённая версия)
+# ===================================================================
 import logging
+from pathlib import Path
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton
@@ -20,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Кнопки Reply-клавиатуры — при их нажатии в режиме поддержки
 # сбрасываем режим ввода, не отправляем текст в тикет.
-KEYBOARD_BUTTONS = {"🔄 Перезапуск", "🆘 Помощь", "📖 Справка"}
+KEYBOARD_BUTTONS = {"🔄 Перезапуск", "🆘 Помощь", "📖 Справка", "📱 Скачать APK"}
 
 # Количество блоков на странице раздела справки
 FAQ_ITEMS_PER_PAGE = 5
@@ -59,7 +63,7 @@ def get_main_menu_keyboard(user_id: int, exclude: str = None) -> InlineKeyboardM
 def get_reply_keyboard(user_id: int) -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("🔄 Перезапуск"), KeyboardButton("🆘 Помощь")],
-        [KeyboardButton("📖 Справка")],
+        [KeyboardButton("📖 Справка"), KeyboardButton("📱 Скачать APK")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
@@ -69,15 +73,9 @@ def get_reply_keyboard(user_id: int) -> ReplyKeyboardMarkup:
 # ===========================================================================
 
 def _build_help_menu(user_id: int) -> tuple:
-    """
-    Возвращает (text, InlineKeyboardMarkup) для меню раздела поддержки.
-    Вид меню зависит от того, есть ли открытый тикет у пользователя.
-    Используется как при первой отправке, так и при возврате из листинга тикетов.
-    """
     ticket = db.get_open_ticket(user_id)
 
     if ticket:
-        # ── Есть открытый тикет — показываем его состояние ──
         subject = ticket["subject"] or "—"
         messages = db.get_last_ticket_messages(ticket["id"], n=1)
         last_line = ""
@@ -106,7 +104,6 @@ def _build_help_menu(user_id: int) -> tuple:
             [InlineKeyboardButton("🔙 Назад", callback_data="help_back")],
         ])
     else:
-        # ── Нет открытого тикета — стандартное меню поддержки ──
         text = (
             "🆘 <b>Техническая поддержка</b>\n\n"
             "Здесь вы можете связаться с командой MrX.\n"
@@ -122,7 +119,6 @@ def _build_help_menu(user_id: int) -> tuple:
 
 
 def _format_ticket_header(ticket: dict) -> str:
-    """Возвращает строку-заголовок тикета вида «#0001 — Тема»."""
     subject = ticket["subject"] or "Без темы"
     return f"#{ticket['id']:04d} — {subject}"
 
@@ -288,7 +284,55 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await _help_handler(update, context)
     elif text == "📖 Справка":
         await _faq_main_handler(update, context)
+    elif text == "📱 Скачать APK":
+        await send_apk(update, context)
 
+
+# ===========================================================================
+# Скачать APK
+# ===========================================================================
+
+async def send_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет пользователю последний APK-файл из телеграм-канала."""
+    user_id = update.effective_user.id
+
+    # Проверка подписки (для не-администраторов)
+    if user_id not in ADMIN_IDS and not await check_subscription(user_id, context):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_LINK)],
+            [InlineKeyboardButton("✅ Проверить подписку", callback_data="check_sub")],
+        ])
+        await update.message.reply_text(
+            "❌ Для скачивания APK необходима подписка на канал.",
+            reply_markup=keyboard
+        )
+        return
+
+    file_id = channel_scanner.get_latest_apk_file_id()
+    if not file_id:
+        await update.message.reply_text("⚠️ APK-файл пока недоступен. Попробуйте позже.")
+        return
+
+    caption = (
+        "✅ Спасибо за загрузку мессенджера! "
+        "Актуальную информацию можете посмотреть в разделе \"📖 Справка\" или в нашем канале."
+    )
+    try:
+        await context.bot.send_document(
+            chat_id=user_id,
+            document=file_id,
+            caption=caption,
+            parse_mode="HTML"
+        )
+    except BadRequest:
+        await update.message.reply_text(
+            "⚠️ Не удалось отправить APK. Возможно, файл был удалён из канала. "
+            "Пожалуйста, дождитесь новой публикации."
+        )
+    except Forbidden:
+        await update.message.reply_text(
+            "❌ Бот не может отправить вам сообщение. Проверьте настройки приватности."
+        )
 
 # ===========================================================================
 # Техническая поддержка — меню помощи (пользовательская сторона)
