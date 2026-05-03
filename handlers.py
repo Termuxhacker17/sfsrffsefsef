@@ -1,5 +1,5 @@
 # ===================================================================
-# handlers.py  (обновлённая версия)
+# handlers.py  (добавлен admin_set_apk, обновлён send_apk)
 # ===================================================================
 import logging
 from pathlib import Path
@@ -293,7 +293,7 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 # ===========================================================================
 
 async def send_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет пользователю последний APK-файл из телеграм-канала."""
+    """Отправляет пользователю последний APK-файл, используя сохранённый file_id."""
     user_id = update.effective_user.id
 
     # Проверка подписки (для не-администраторов)
@@ -310,7 +310,7 @@ async def send_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_id = channel_scanner.get_latest_apk_file_id()
     if not file_id:
-        await update.message.reply_text("⚠️ APK-файл пока недоступен. Попробуйте позже.")
+        await update.message.reply_text("⚠️ APK-файл пока не загружен. Попробуйте позже или обратитесь в поддержку.")
         return
 
     caption = (
@@ -327,12 +327,55 @@ async def send_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest:
         await update.message.reply_text(
             "⚠️ Не удалось отправить APK. Возможно, файл был удалён из канала. "
-            "Пожалуйста, дождитесь новой публикации."
+            "Пожалуйста, дождитесь новой публикации или сообщите администратору."
         )
     except Forbidden:
         await update.message.reply_text(
             "❌ Бот не может отправить вам сообщение. Проверьте настройки приватности."
         )
+
+
+# ===========================================================================
+# Команда /setapk – ручная установка APK (только для администраторов)
+# ===========================================================================
+
+async def admin_set_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Нет прав.")
+        return
+
+    # Должен быть ответ на сообщение с файлом
+    if not update.message.reply_to_message:
+        await update.message.reply_text(
+            "ℹ️ Использование: ответьте на сообщение, содержащее APK-файл, командой /setapk.\n"
+            "Например, перешлите сообщение из канала с APK и ответьте на него."
+        )
+        return
+
+    original_msg = update.message.reply_to_message
+    doc = original_msg.document
+    if not doc:
+        await update.message.reply_text("⚠️ В пересланном сообщении нет файла.")
+        return
+
+    # Проверка, что это APK
+    mime = doc.mime_type or ""
+    fname = doc.file_name or ""
+    if not ('apk' in mime or fname.lower().endswith('.apk')):
+        await update.message.reply_text("⚠️ Файл не является APK (по расширению или MIME).")
+        return
+
+    # Сохраняем file_id
+    try:
+        channel_scanner.APK_FILE_ID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        channel_scanner.APK_FILE_ID_PATH.write_text(doc.file_id)
+        await update.message.reply_text("✅ APK успешно обновлён! Теперь пользователи получают эту версию.")
+        logger.info(f"Администратор {user_id} установил новый APK file_id: {doc.file_id}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения file_id: {e}")
+        await update.message.reply_text("❌ Не удалось сохранить APK. Проверьте логи.")
+
 
 # ===========================================================================
 # Техническая поддержка — меню помощи (пользовательская сторона)
@@ -1191,7 +1234,7 @@ async def on_edited_channel_post(update: Update, context: ContextTypes.DEFAULT_T
 # Справка (FAQ)
 # ===========================================================================
 
-# ── Вспомогательные функции ──────────────────────────────────────────────────
+# ── Вспомогательные функции ─
 
 def _faq_main_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура главной страницы справки: 4 раздела + Назад."""
@@ -1247,7 +1290,7 @@ def _faq_item_keyboard(item_id: str) -> InlineKeyboardMarkup:
     ])
 
 
-# ── Хендлеры ─────────────────────────────────────────────────────────────────
+# ── Хендлеры ─
 
 async def _faq_main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reply-кнопка «📖 Справка» — отправляет новое сообщение с меню справки."""
