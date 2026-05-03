@@ -26,6 +26,7 @@ from handlers import (
     admin_broadcast,
     admin_notify,
     cancel_command,
+    admin_set_apk,          # <-- НОВАЯ КОМАНДА
     # Поддержка — меню помощи
     help_back_callback,
     help_show_callback,
@@ -74,6 +75,7 @@ def main():
     application.add_handler(CommandHandler("broadcast", admin_broadcast, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("notify",    admin_notify,    filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("cancel",    cancel_command,  filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("setapk",    admin_set_apk,   filters=filters.ChatType.PRIVATE))  # <-- НОВАЯ
 
     # ── Инлайн-кнопки главного меню ──────────────────────────────────────────
     application.add_handler(CallbackQueryHandler(check_subscription_callback,   pattern=r"^check_sub$"))
