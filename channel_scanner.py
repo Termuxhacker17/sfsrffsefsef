@@ -1,3 +1,6 @@
+# ===================================================================
+# channel_scanner.py  (обновлённая версия)
+# ===================================================================
 import os
 import re
 import asyncio
@@ -20,6 +23,9 @@ TEXTS_DIR = BASE_DIR / "texts"
 MEDIA_DIR = BASE_DIR / "media"
 META_DIR = BASE_DIR / "meta"
 DELETED_LOG = META_DIR / "deleted_posts.json"
+
+# Файл, в котором хранится file_id последнего APK
+APK_FILE_ID_PATH = META_DIR / "latest_apk_file_id.txt"
 
 MEDIA_SUBDIRS = {
     'photo': 'photos',
@@ -78,7 +84,6 @@ def get_next_post_number() -> int:
     max_num = 0
     for f in files:
         try:
-            # Имя файла может быть "0001.txt" или "0001_edited.txt", берём первые 4 цифры
             num = int(f.stem[:4])
             if num > max_num:
                 max_num = num
@@ -162,6 +167,12 @@ def save_deleted_post_info(post_number: int, message_id: int, reason: str = "del
         json.dump(existing, f, ensure_ascii=False, indent=2)
     logger.info(f"Информация об удалённом посте #{post_number} сохранена в {DELETED_LOG}")
 
+def get_latest_apk_file_id() -> Optional[str]:
+    """Возвращает file_id последнего APK-файла из канала (или None)."""
+    if APK_FILE_ID_PATH.exists():
+        return APK_FILE_ID_PATH.read_text().strip()
+    return None
+
 # ------------------------ Обработка одного поста ------------------------
 async def process_single_post(message: Message, post_number: int, bot: Bot, force_overwrite: bool = False) -> Tuple[int, int]:
     """
@@ -217,7 +228,16 @@ async def process_single_post(message: Message, post_number: int, bot: Bot, forc
         media_objects.append(('sticker', message.sticker))
 
     media_count = 0
+    apk_file_id = None  # сюда сохраним file_id, если найдём APK
+
     for idx, (media_type, media_obj) in enumerate(media_objects):
+        # Проверка на APK
+        if media_type == 'document':
+            mime = getattr(media_obj, 'mime_type', '')
+            fname = getattr(media_obj, 'file_name', '')
+            if 'apk' in mime or (fname and fname.lower().endswith('.apk')):
+                apk_file_id = media_obj.file_id
+
         try:
             base_name = f"{post_number:04d}"
             if idx > 0:
@@ -245,6 +265,14 @@ async def process_single_post(message: Message, post_number: int, bot: Bot, forc
         except Exception as e:
             logger.error(f"Ошибка скачивания медиа #{idx} поста #{post_number}: {e}")
 
+    # Сохраняем file_id APK, если он был в этом посте
+    if apk_file_id:
+        APK_FILE_ID_PATH.write_text(apk_file_id)
+        logger.info(f"Обновлён APK file_id: {apk_file_id}")
+    elif force_overwrite and exists:
+        # Если пост отредактировали и удалили APK, не трогаем старый file_id
+        pass
+
     save_post_meta(post_number, message)
     return 1, media_count
 
@@ -255,7 +283,7 @@ async def scan_channel(bot: Bot) -> Tuple[int, int]:
 
     total_processed = 0
     total_media = 0
-    last_message_id = 0  # 0 означает начало с самого нового сообщения
+    last_message_id = 0
 
     logger.info(f"Начинаем полное сканирование канала {CHANNEL_ID}...")
 
@@ -268,9 +296,6 @@ async def scan_channel(bot: Bot) -> Tuple[int, int]:
     while True:
         try:
             messages = []
-            # В PTB 22.7 get_chat_history возвращает асинхронный итератор
-            # Параметр before_message_id указывает, ДО какого сообщения загружать (более старые)
-            # Передаём None для первого запроса
             async for message in bot.get_chat_history(
                 chat_id=CHANNEL_ID,
                 limit=HISTORY_LIMIT,
@@ -281,7 +306,6 @@ async def scan_channel(bot: Bot) -> Tuple[int, int]:
             if not messages:
                 break
 
-            # Сообщения приходят от новых к старым, переворачиваем для хронологической обработки
             for message in reversed(messages):
                 last_message_id = message.message_id
                 processed_ids.add(message.message_id)
@@ -306,7 +330,6 @@ async def scan_channel(bot: Bot) -> Tuple[int, int]:
             logger.error(f"Ошибка сканирования: {e}", exc_info=True)
             break
 
-    # Проверяем удалённые посты
     for missing_post_num in existing_posts:
         meta = load_post_meta(missing_post_num)
         if meta:
